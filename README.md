@@ -16,6 +16,67 @@
 - 下载可公开访问的 PDF，并生成失败下载清单。
 - 从 PDF 中抽取正文引用上下文，生成 CSV 和 Excel 汇总。
 
+## 环境配置
+
+推荐环境：
+
+- Windows 10/11 或 Linux/macOS。
+- Python 3.10+。Windows 上优先使用 Python Launcher，也就是 `py` 命令。
+- Edge、Chrome 或 Firefox 浏览器。默认浏览器参数是 `--browser edge`。
+- 可访问 Google Scholar、Semantic Scholar、arXiv、出版社页面等网络资源。
+
+检查 Python：
+
+```powershell
+py -V
+py -0p
+```
+
+如果 `python` 命令打开 Microsoft Store 或提示找不到 Python，属于 Windows 的 App Execution Alias 干扰；优先使用 `py`，或在系统设置里关闭 `python.exe` / `python3.exe` 的 App Execution Alias。
+
+建议使用虚拟环境：
+
+```powershell
+cd "$env:CODEX_HOME\skills\paper-citation-researcher"
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+如果 PowerShell 阻止激活虚拟环境，可先执行：
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+激活虚拟环境后，用 `python` 运行脚本；未激活虚拟环境时，用 `py` 更稳：
+
+```powershell
+python scripts/paper_citation_researcher.py --help
+py scripts/paper_citation_researcher.py --help
+```
+
+依赖检查：
+
+```powershell
+python -c "import bs4, openpyxl, pandas, pypdf, requests, selenium; print('ok')"
+```
+
+可选环境变量：
+
+```powershell
+$env:SEMANTIC_SCHOLAR_API_KEY = "<your-api-key>"
+```
+
+如果希望长期保存：
+
+```powershell
+setx SEMANTIC_SCHOLAR_API_KEY "<your-api-key>"
+```
+
+Semantic Scholar API key 不是必需项；不设置也能运行，只是匿名请求更容易遇到限流。这个 skill 的 find/download/analyze 流程不需要 OpenAI API key。
+
 ## 安装
 
 将 zip 解压到目标环境的 skills 目录，例如：
