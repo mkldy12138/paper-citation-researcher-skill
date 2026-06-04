@@ -48,7 +48,7 @@ The `analyze` command reads this file automatically and includes rows whose `man
 - `page`: 1-based PDF page number.
 - `line_start` / `line_end`: line range in the extracted page text.
 - `citation_marker`: verified body citation marker, such as a numeric reference marker or explicit target-paper mention.
-- `match_type`: heuristic used to keep the location, such as verified numeric reference or explicit title/name mention.
+- `match_type`: heuristic used to keep the location, such as verified numeric reference or explicit target-name mention.
 - `confidence`: heuristic confidence score.
 - `context`: extracted in-body citation context.
 - `is_positive`: whether the context contains positive/affirmative language.
@@ -80,3 +80,13 @@ Workbook with:
 - `locations`: rows from `citation_locations_reliable.csv`.
 - `per_paper_summary`: reliable location counts, positive counts, pages, markers, and match types grouped by citing paper.
 - `coverage`: rows from `citation_paper_coverage_reliable.csv`.
+
+## `citation_dashboard.html`
+
+Self-contained HTML dashboard generated automatically by `analyze`, or regenerated from existing outputs with:
+
+```powershell
+python scripts/paper_citation_researcher.py dashboard --output ".\out"
+```
+
+It summarizes target metadata, source-platform distribution, download status, analysis coverage status, yearly distribution, top reliable citation-location papers, coverage rows, and reliable citation-location rows.

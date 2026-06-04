@@ -21,6 +21,7 @@ Run phases separately:
 python scripts/paper_citation_researcher.py find --paper "<title-or-doi>" --output ".\out"
 python scripts/paper_citation_researcher.py download --input ".\out\citing_papers.csv" --output ".\out" --download-workers 4
 python scripts/paper_citation_researcher.py analyze --target-title "<title>" --metadata ".\out\citing_papers.csv" --pdf-dir ".\out\pdfs" --output ".\out"
+python scripts/paper_citation_researcher.py dashboard --output ".\out"
 ```
 
 ## Initial Setup
@@ -86,7 +87,8 @@ When the user asks what can be changed, explain only the relevant phase:
 - When Google Scholar and Semantic Scholar return the same citing paper, Google Scholar display fields take priority while Semantic Scholar DOI/open-access metadata is retained.
 - PDF downloading uses parallel workers by default (`--download-workers 4`).
 - PDF download only uses open/direct links, publisher metadata links, arXiv, or ACL Anthology. Do not use paywall bypasses.
-- Analysis first locates the target paper's reference entry in each PDF, then reports only reliable body locations: verified numeric citation markers tied to that reference entry, or explicit `ShapeGPT` mentions. It writes reliable location and coverage outputs and marks positive contexts with a conservative keyword heuristic.
+- Analysis first locates the target paper's reference entry in each PDF, then reports only reliable body locations: verified numeric citation markers tied to that reference entry, or explicit target-name mentions. It writes reliable location and coverage outputs, marks positive contexts with a conservative keyword heuristic, and automatically generates a self-contained HTML dashboard.
+- The `dashboard` command can regenerate the HTML dashboard from existing output files without rerunning find/download/analyze.
 
 ## Outputs
 
@@ -101,6 +103,7 @@ The output directory contains:
 - `citation_locations_reliable.csv`: reliable body citation locations with citing paper, PDF path, page, line range, citation marker, match type, and context.
 - `citation_paper_coverage_reliable.csv`: per-paper analysis coverage, including papers whose PDFs were not downloaded or whose downloaded PDFs only contained the target in references.
 - `citation_locations_reliable.xlsx`: workbook with `locations`, `per_paper_summary`, and `coverage` sheets.
+- `citation_dashboard.html`: self-contained frontend dashboard with summary metrics, charts, coverage table, and reliable citation-location table.
 
 ## Script Reference
 

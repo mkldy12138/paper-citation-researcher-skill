@@ -1568,6 +1568,223 @@ def rows_for_analysis(args: argparse.Namespace) -> List[Dict[str, Any]]:
     return rows
 
 
+def dashboard_records(df: pd.DataFrame, columns: Sequence[str]) -> List[Dict[str, Any]]:
+    subset = df.reindex(columns=columns).fillna("")
+    return [{key: text_value(value) for key, value in row.items()} for row in subset.to_dict("records")]
+
+
+def dashboard_counts(series: pd.Series) -> Dict[str, int]:
+    return {str(key): int(value) for key, value in series.fillna("Unknown").value_counts().items()}
+
+
+def build_dashboard_payload(output: Path) -> Dict[str, Any]:
+    required = [
+        output / "target.json",
+        output / "citing_papers.csv",
+        output / "download_manifest.csv",
+        output / "citation_locations_reliable.csv",
+        output / "citation_paper_coverage_reliable.csv",
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        raise RuntimeError(f"Cannot build dashboard; missing files: {', '.join(missing)}")
+
+    target = json.loads((output / "target.json").read_text(encoding="utf-8"))
+    citing = pd.read_csv(output / "citing_papers.csv")
+    manifest = pd.read_csv(output / "download_manifest.csv")
+    locations = pd.read_csv(output / "citation_locations_reliable.csv")
+    coverage = pd.read_csv(output / "citation_paper_coverage_reliable.csv")
+
+    normalized_titles = (
+        citing["citing_title"].fillna("").astype(str).str.lower().str.replace(r"\W+", " ", regex=True).str.strip()
+    )
+    year_counts = (
+        citing["publication_year"]
+        .fillna("Unknown")
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+        .value_counts()
+        .sort_index()
+    )
+    top_locations = (
+        coverage[coverage["location_count"].fillna(0).astype(int) > 0]
+        .sort_values(["location_count", "citing_title"], ascending=[False, True])
+        .head(12)
+    )
+    coverage_with_meta = coverage.merge(
+        citing[
+            [
+                "citing_title",
+                "publication_year",
+                "venue",
+                "citation_count",
+                "url",
+                "semantic_scholar_paper_id",
+                "google_scholar_cited_by_url",
+            ]
+        ],
+        on="citing_title",
+        how="left",
+    )
+    external = target.get("externalIds") or {}
+    return {
+        "target": {
+            "title": target.get("title", ""),
+            "year": target.get("year", ""),
+            "citationCount": target.get("citationCount", ""),
+            "url": target.get("url", ""),
+            "doi": external.get("DOI", ""),
+            "arxiv": external.get("ArXiv", ""),
+        },
+        "stats": {
+            "citingRows": int(len(citing)),
+            "titleUniqueRows": int(normalized_titles.nunique()),
+            "titleDuplicateGroups": int((normalized_titles.value_counts() > 1).sum()),
+            "downloaded": int((manifest["download_status"] == "downloaded").sum()),
+            "failed": int((manifest["download_status"] == "failed").sum()),
+            "locationRows": int(len(locations)),
+            "locatedPapers": int(locations["citing_title"].nunique()) if len(locations) else 0,
+            "positiveLocations": int(locations["is_positive"].sum()) if "is_positive" in locations else 0,
+        },
+        "charts": {
+            "sourcePlatforms": dashboard_counts(citing["source_platforms"]),
+            "publicationYears": {str(key): int(value) for key, value in year_counts.items()},
+            "downloadStatus": dashboard_counts(manifest["download_status"]),
+            "analysisStatus": dashboard_counts(coverage["analysis_status"]),
+            "matchType": dashboard_counts(locations["match_type"]) if len(locations) else {},
+        },
+        "topLocations": dashboard_records(
+            top_locations,
+            ["citing_title", "analysis_status", "location_count", "pages", "reference_marker", "source_platforms"],
+        ),
+        "papers": dashboard_records(
+            coverage_with_meta,
+            [
+                "citing_title",
+                "publication_year",
+                "venue",
+                "citation_count",
+                "source_platforms",
+                "download_status",
+                "analysis_status",
+                "location_count",
+                "pages",
+                "reference_marker",
+                "reference_evidence",
+                "failure_reason",
+                "url",
+            ],
+        ),
+        "locations": dashboard_records(
+            locations,
+            [
+                "citing_title",
+                "page",
+                "line_start",
+                "line_end",
+                "citation_marker",
+                "match_type",
+                "confidence",
+                "is_positive",
+                "context",
+                "reference_marker",
+                "source_platforms",
+                "doi",
+            ],
+        ),
+    }
+
+
+def dashboard_html(payload: Dict[str, Any]) -> str:
+    data_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    template = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>引用调查可视化</title>
+  <style>
+    :root { --bg:#f6f7f9; --panel:#fff; --ink:#202124; --muted:#64707d; --line:#d9dee5; --teal:#0f766e; --blue:#2563eb; --amber:#b7791f; --rose:#be123c; --violet:#7c3aed; --green:#15803d; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 "Segoe UI", Arial, sans-serif; }
+    header { background:#fff; border-bottom:1px solid var(--line); }
+    .wrap { max-width:1440px; margin:0 auto; padding:18px 22px; }
+    .title-row { display:grid; grid-template-columns:1fr auto; gap:16px; align-items:end; }
+    h1 { margin:0; font-size:24px; line-height:1.2; letter-spacing:0; }
+    h2 { margin:0; padding:13px 14px 0; font-size:16px; letter-spacing:0; }
+    .subline { margin-top:6px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap; }
+    .links { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    a.button { color:var(--teal); border:1px solid #9ccfca; padding:7px 10px; border-radius:6px; text-decoration:none; background:#f2fbfa; white-space:nowrap; }
+    main.wrap { display:grid; gap:16px; }
+    .stats { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
+    .stat,.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 1px 2px rgba(16,24,40,.08); }
+    .stat { padding:12px; min-height:86px; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0; }
+    .value { margin-top:8px; font-size:26px; font-weight:700; line-height:1; }
+    .note { margin-top:8px; color:var(--muted); font-size:12px; }
+    .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:16px; }
+    .span-4 { grid-column:span 4; } .span-5 { grid-column:span 5; } .span-7 { grid-column:span 7; } .span-12 { grid-column:span 12; }
+    .panel-body { padding:14px; }
+    .bars { display:grid; gap:11px; }
+    .bar-row { display:grid; grid-template-columns:minmax(130px,1fr) minmax(160px,2fr) 42px; gap:10px; align-items:center; }
+    .bar-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#334155; }
+    .bar-track { height:12px; background:#edf0f4; border-radius:999px; overflow:hidden; }
+    .bar-fill { height:100%; background:var(--teal); border-radius:999px; }
+    .bar-value { color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
+    .filters { display:grid; grid-template-columns:1.5fr 220px 220px; gap:10px; margin-bottom:12px; }
+    input,select { width:100%; border:1px solid var(--line); border-radius:6px; padding:9px 10px; font:inherit; background:#fff; color:var(--ink); }
+    table { width:100%; border-collapse:collapse; table-layout:fixed; }
+    th,td { padding:9px 8px; border-bottom:1px solid #edf0f4; vertical-align:top; text-align:left; }
+    th { color:#475569; font-size:12px; background:#fafafa; position:sticky; top:0; z-index:1; }
+    td { color:#26313d; word-wrap:break-word; }
+    .table-wrap { max-height:520px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+    .pill { display:inline-flex; align-items:center; min-height:22px; padding:2px 7px; border-radius:999px; font-size:12px; border:1px solid transparent; white-space:nowrap; }
+    .ok { color:#166534; background:#ecfdf3; border-color:#bbf7d0; } .warn { color:#92400e; background:#fffbeb; border-color:#fde68a; } .bad { color:#9f1239; background:#fff1f2; border-color:#fecdd3; } .neutral { color:#475569; background:#f8fafc; border-color:#e2e8f0; }
+    .context { color:#334155; max-width:760px; } .muted { color:var(--muted); }
+    @media (max-width:980px) { .title-row,.filters { grid-template-columns:1fr; } .links { justify-content:flex-start; } .stats { grid-template-columns:repeat(2,minmax(0,1fr)); } .span-4,.span-5,.span-7,.span-12 { grid-column:span 12; } }
+  </style>
+</head>
+<body>
+  <header><div class="wrap title-row"><div><h1>引用调查可视化</h1><div class="subline" id="targetMeta"></div></div><nav class="links"><a class="button" href="citing_papers.csv">被引列表 CSV</a><a class="button" href="citation_locations_reliable.csv">引用位置 CSV</a><a class="button" href="citation_locations_reliable.xlsx">可靠结果 Excel</a></nav></div></header>
+  <main class="wrap">
+    <section class="stats" id="stats"></section>
+    <section class="grid">
+      <article class="panel span-4"><h2>来源分布</h2><div class="panel-body" id="sourceChart"></div></article>
+      <article class="panel span-4"><h2>下载状态</h2><div class="panel-body" id="downloadChart"></div></article>
+      <article class="panel span-4"><h2>第三步覆盖状态</h2><div class="panel-body" id="coverageChart"></div></article>
+      <article class="panel span-5"><h2>发表年份</h2><div class="panel-body" id="yearChart"></div></article>
+      <article class="panel span-7"><h2>引用位置最多的论文</h2><div class="panel-body" id="topChart"></div></article>
+      <article class="panel span-12"><h2>论文覆盖表</h2><div class="panel-body"><div class="filters"><input id="paperSearch" placeholder="搜索论文、venue、URL"><select id="statusFilter"></select><select id="sourceFilter"></select></div><div class="table-wrap"><table><thead><tr><th style="width:34%">论文</th><th style="width:8%">年份</th><th style="width:13%">来源</th><th style="width:14%">状态</th><th style="width:9%">位置数</th><th style="width:10%">页码</th><th style="width:12%">参考标记</th></tr></thead><tbody id="paperRows"></tbody></table></div></div></article>
+      <article class="panel span-12"><h2>可靠引用位置</h2><div class="panel-body"><div class="filters"><input id="locationSearch" placeholder="搜索论文、引用标记、上下文"><select id="matchFilter"></select><select id="positiveFilter"><option value="">全部情感/用途</option><option value="true">positive</option><option value="false">not positive</option></select></div><div class="table-wrap"><table><thead><tr><th style="width:25%">论文</th><th style="width:8%">页/行</th><th style="width:14%">标记</th><th style="width:14%">匹配类型</th><th style="width:39%">上下文</th></tr></thead><tbody id="locationRows"></tbody></table></div></div></article>
+    </section>
+  </main>
+  <script id="payload" type="application/json">__DATA__</script>
+  <script>
+    const data = JSON.parse(document.getElementById('payload').textContent);
+    const colors = ['#0f766e','#2563eb','#b7791f','#be123c','#7c3aed','#15803d','#6b7280'];
+    function esc(v){ return String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch])); }
+    function pillClass(v){ if(['downloaded','cited_in_body'].includes(v)) return 'ok'; if(['failed','pdf_not_downloaded','target_reference_not_found','pdf_missing','pdf_parse_failed'].includes(v)) return 'bad'; if(v==='target_reference_found_no_body_hits') return 'warn'; return 'neutral'; }
+    function barChart(id,obj,limit=12){ const entries=Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,limit); const max=Math.max(1,...entries.map(([,v])=>v)); document.getElementById(id).innerHTML='<div class="bars">'+entries.map(([label,value],idx)=>`<div class="bar-row"><div class="bar-label" title="${esc(label)}">${esc(label)}</div><div class="bar-track"><div class="bar-fill" style="width:${Math.max(3,value/max*100)}%;background:${colors[idx%colors.length]}"></div></div><div class="bar-value">${value}</div></div>`).join('')+'</div>'; }
+    function fillSelect(id,label,values){ const el=document.getElementById(id); el.innerHTML=`<option value="">${esc(label)}</option>`+[...new Set(values.filter(Boolean))].sort().map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join(''); }
+    function renderTarget(){ const t=data.target; document.getElementById('targetMeta').innerHTML=[`目标论文：${esc(t.title)}`,`年份：${esc(t.year)}`,`Semantic Scholar citationCount：${esc(t.citationCount)}`,t.doi?`DOI：${esc(t.doi)}`:'',t.arxiv?`arXiv：${esc(t.arxiv)}`:''].filter(Boolean).map(x=>`<span>${x}</span>`).join(''); }
+    function renderStats(){ const s=data.stats; const items=[['被引记录',s.citingRows,`${s.titleUniqueRows} 个标题去重后唯一项`],['PDF 下载成功',s.downloaded,`${s.failed} 个失败进入 manual todo`],['可靠引用位置',s.locationRows,`覆盖 ${s.locatedPapers} 篇论文`],['Positive 位置',s.positiveLocations,'关键词启发式标记'],['标题疑似重复组',s.titleDuplicateGroups,'跨平台年份/标题差异'],['第三步输出','Reliable','自动生成前端展示']]; document.getElementById('stats').innerHTML=items.map(([label,value,note])=>`<article class="stat"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="note">${esc(note)}</div></article>`).join(''); }
+    function renderPaperRows(){ const q=document.getElementById('paperSearch').value.toLowerCase(); const status=document.getElementById('statusFilter').value; const source=document.getElementById('sourceFilter').value; const rows=data.papers.filter(row=>{ const hay=[row.citing_title,row.venue,row.url,row.reference_evidence].join(' ').toLowerCase(); return (!q||hay.includes(q))&&(!status||row.analysis_status===status)&&(!source||row.source_platforms===source); }); document.getElementById('paperRows').innerHTML=rows.map(row=>`<tr><td>${esc(row.citing_title)}<div class="muted">${esc(row.venue||'')}</div></td><td>${esc(String(row.publication_year||'').replace(/\.0$/,''))}</td><td>${esc(row.source_platforms)}</td><td><span class="pill ${pillClass(row.analysis_status)}">${esc(row.analysis_status)}</span></td><td>${esc(row.location_count||0)}</td><td>${esc(row.pages||'')}</td><td>${esc(row.reference_marker||'')}</td></tr>`).join(''); }
+    function renderLocationRows(){ const q=document.getElementById('locationSearch').value.toLowerCase(); const match=document.getElementById('matchFilter').value; const positive=document.getElementById('positiveFilter').value; const rows=data.locations.filter(row=>{ const hay=[row.citing_title,row.citation_marker,row.match_type,row.context].join(' ').toLowerCase(); const isPositive=String(row.is_positive).toLowerCase(); return (!q||hay.includes(q))&&(!match||row.match_type===match)&&(!positive||isPositive===positive); }); document.getElementById('locationRows').innerHTML=rows.map(row=>`<tr><td>${esc(row.citing_title)}</td><td>p.${esc(row.page)}<div class="muted">L${esc(row.line_start)}-${esc(row.line_end)}</div></td><td>${esc(row.citation_marker)}<div class="muted">ref ${esc(row.reference_marker||'')}</div></td><td><span class="pill neutral">${esc(row.match_type)}</span><div class="muted">conf ${esc(row.confidence)}</div></td><td class="context">${esc(row.context)}</td></tr>`).join(''); }
+    function init(){ renderTarget(); renderStats(); barChart('sourceChart',data.charts.sourcePlatforms); barChart('downloadChart',data.charts.downloadStatus); barChart('coverageChart',data.charts.analysisStatus); barChart('yearChart',data.charts.publicationYears); barChart('topChart',Object.fromEntries(data.topLocations.map(row=>[row.citing_title,Number(row.location_count)||0])),12); fillSelect('statusFilter','全部覆盖状态',data.papers.map(row=>row.analysis_status)); fillSelect('sourceFilter','全部来源',data.papers.map(row=>row.source_platforms)); fillSelect('matchFilter','全部匹配类型',data.locations.map(row=>row.match_type)); ['paperSearch','statusFilter','sourceFilter'].forEach(id=>document.getElementById(id).addEventListener('input',renderPaperRows)); ['locationSearch','matchFilter','positiveFilter'].forEach(id=>document.getElementById(id).addEventListener('input',renderLocationRows)); renderPaperRows(); renderLocationRows(); }
+    init();
+  </script>
+</body>
+</html>
+"""
+    return template.replace("__DATA__", data_json)
+
+
+def write_dashboard(output: Path) -> Path:
+    dashboard_path = output / "citation_dashboard.html"
+    dashboard_path.write_text(dashboard_html(build_dashboard_payload(output)), encoding="utf-8")
+    return dashboard_path
+
+
 def cmd_analyze(args: argparse.Namespace) -> Path:
     output = ensure_dir(args.output)
     target = load_target_for_analysis(args)
@@ -1625,7 +1842,16 @@ def cmd_analyze(args: argparse.Namespace) -> Path:
     print(f"Saved reliable citation locations: {contexts_path}")
     print(f"Saved reliable paper coverage: {coverage_path}")
     print(f"Saved reliable citation workbook: {workbook_path}")
+    dashboard_path = write_dashboard(output)
+    print(f"Saved citation dashboard: {dashboard_path}")
     return contexts_path
+
+
+def cmd_dashboard(args: argparse.Namespace) -> Path:
+    output = ensure_dir(args.output)
+    dashboard_path = write_dashboard(output)
+    print(f"Saved citation dashboard: {dashboard_path}")
+    return dashboard_path
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -1687,6 +1913,10 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_p.add_argument("--context-lines", type=int, default=2)
     analyze_p.add_argument("--analysis-scope", choices=["all-contexts", "positive-only", "summary-only"], default="all-contexts")
     analyze_p.set_defaults(func=cmd_analyze)
+
+    dashboard_p = sub.add_parser("dashboard", help="Build the citation dashboard from existing outputs")
+    dashboard_p.add_argument("--output", required=True)
+    dashboard_p.set_defaults(func=cmd_dashboard)
 
     run_p = sub.add_parser("run", help="Run find, download, and analyze")
     add_common_find_args(run_p)
