@@ -1,0 +1,5 @@
+version: 1
+interface:
+  display_name: "Paper Citation Researcher"
+  short_description: "Find citing papers and analyze citation contexts"
+  default_prompt: "Use $paper-citation-researcher to find citing papers for this paper title, download open PDFs, and analyze citation contexts."

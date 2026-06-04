@@ -5,6 +5,7 @@
 ## 文件
 
 - `paper-citation-researcher-skill.zip`: skill 压缩包，解压后根目录为 `paper-citation-researcher/`。
+- `paper-citation-researcher/`: 可直接查看和安装的 skill 源目录。
 - `SHA256SUMS.txt`: zip 文件的 SHA-256 校验值。
 
 ## 功能
@@ -14,7 +15,7 @@
 - Google Scholar 默认使用 `--scholar-locale zh-CN`，并按 reported cited-by count 翻页。
 - `citing_papers.csv` 中 Google Scholar 和 Semantic Scholar 的 `citation_count` 均不会留空；无引用数时写 `0`。
 - 下载可公开访问的 PDF，并生成失败下载清单。
-- 从 PDF 中抽取正文引用上下文，生成 CSV 和 Excel 汇总。
+- 从 PDF 中定位目标论文的参考文献条目，再输出可靠的正文引用位置、逐论文覆盖率报告和 Excel 汇总。
 
 ## 环境配置
 
