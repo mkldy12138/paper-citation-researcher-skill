@@ -6,7 +6,7 @@
 
 - `paper-citation-researcher-skill.zip`: skill 压缩包，解压后根目录为 `paper-citation-researcher/`。
 - `paper-citation-researcher/`: 可直接查看和安装的 skill 源目录。
-- `assets/34085a9e-1fd0-4844-832f-afbc54357fc8.png`: dashboard 效果预览图。
+- `assets/9fce4155-66ce-445b-83ba-9e1b66cc5a30.png`: dashboard 效果预览图。
 - `SHA256SUMS.txt`: zip 文件的 SHA-256 校验值。
 
 ## 功能
@@ -20,7 +20,7 @@
 
 ## 效果预览
 
-![Citation dashboard preview](assets/34085a9e-1fd0-4844-832f-afbc54357fc8.png)
+![Citation dashboard preview](assets/9fce4155-66ce-445b-83ba-9e1b66cc5a30.png)
 
 ## 环境配置
 
