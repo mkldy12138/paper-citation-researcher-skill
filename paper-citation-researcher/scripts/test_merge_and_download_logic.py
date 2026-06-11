@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -447,19 +448,312 @@ def test_parallel_download_manifest(module) -> None:
                 output=str(tmp_path),
                 arxiv_fallback=False,
                 download_workers=2,
+                export_legacy_csv=False,
             )
             module.cmd_download(args)
 
+            report = pd.read_excel(tmp_path / "citation_report.xlsx", sheet_name=None, dtype=str)
+            papers = report["papers"].fillna("")
+            downloaded = report["downloaded_papers"].fillna("")
+            download_failures = report["download_failures"].fillna("")
+            manual = report["manual_download_todo"].fillna("")
+            assert list(papers["download_status"]) == ["downloaded", "failed"]
+            assert list(downloaded["citing_title"]) == ["Download OK"]
+            assert list(download_failures["citing_title"]) == ["Download Fails"]
+            assert "mock://bad" in download_failures.iloc[0]["candidate_urls"]
+            assert len(manual) == 1
+            assert Path(papers.loc[0, "pdf_path"]).exists()
+            assert not (tmp_path / "download_manifest.csv").exists()
+
+            legacy_args = argparse.Namespace(
+                input=str(input_path),
+                output=str(tmp_path),
+                arxiv_fallback=False,
+                download_workers=1,
+                export_legacy_csv=True,
+            )
+            module.cmd_download(legacy_args)
             manifest = pd.read_csv(tmp_path / "download_manifest.csv", dtype=str).fillna("")
             failures = pd.read_csv(tmp_path / "download_failures.csv", dtype=str).fillna("")
-            manual = pd.read_csv(tmp_path / "manual_download_todo.csv", dtype=str).fillna("")
             assert list(manifest["download_status"]) == ["downloaded", "failed"]
             assert len(failures) == 1
-            assert len(manual) == 1
-            assert Path(manifest.loc[0, "pdf_path"]).exists()
     finally:
         module.try_download_url = original_try_download_url
         module.arxiv_fallback = original_arxiv_fallback
+
+
+def test_author_enrichment_outputs_notable_locations(module) -> None:
+    original_s2_author_metrics = module.s2_author_metrics
+    original_google_author_metrics = module.google_author_metrics
+    original_wikipedia_summary = module.wikipedia_summary
+
+    def fake_s2_author_metrics(session, author_id, name, api_key=""):
+        if author_id == "ada-id" or name == "Ada Lovelace":
+            return {
+                "authorId": "ada-id",
+                "citationCount": 9000,
+                "hIndex": 80,
+                "paperCount": 120,
+                "affiliations": ["Example University"],
+                "url": "https://www.semanticscholar.org/author/ada-id",
+            }
+        if name == "Grace Hopper":
+            return {
+                "authorId": "grace-id",
+                "citationCount": 5000,
+                "hIndex": 60,
+                "paperCount": 90,
+                "affiliations": ["Example Lab"],
+                "url": "https://www.semanticscholar.org/author/grace-id",
+            }
+        return {}
+
+    def fake_google_author_metrics(session, name, titles, locale, min_delay, max_delay):
+        if name == "Ada Lovelace":
+            return {
+                "citations": 12000,
+                "profile_url": "https://scholar.google.com/citations?user=ada",
+                "match_status": "exact_name_paper_match",
+            }
+        return {"match_status": "not_found"}
+
+    def fake_wikipedia_summary(session, name):
+        if name == "Ada Lovelace":
+            return {
+                "title": "Ada Lovelace",
+                "url": "https://en.wikipedia.org/wiki/Ada_Lovelace",
+                "wikidata_id": "Q7259",
+                "wikidata_description": "English mathematician and writer",
+                "summary": "Ada Lovelace was a professor and ACM Fellow in this mock record.",
+                "evidence": "ACM Fellow",
+                "wikidata_evidence": "award received: ACM Fellow",
+                "is_notable": True,
+                "notable_reason": "ACM Fellow",
+            }
+        return {"is_notable": False}
+
+    module.s2_author_metrics = fake_s2_author_metrics
+    module.google_author_metrics = fake_google_author_metrics
+    module.wikipedia_summary = fake_wikipedia_summary
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            target = {
+                "title": "Target Paper",
+                "authors": [{"name": "Target Author", "authorId": "target-id"}],
+            }
+            papers = pd.DataFrame(
+                [
+                    {
+                        "dedupe_key": "target-overlap",
+                        "citing_title": "Analytical Engines for Point Clouds",
+                        "citing_authors": "Target Author, Ada Lovelace",
+                        "citing_authors_json": json.dumps(
+                            [
+                                {"name": "Target Author", "authorId": "target-id"},
+                                {"name": "Ada Lovelace", "authorId": "ada-id"},
+                            ]
+                        ),
+                        "citing_author_ids": "target-id;ada-id",
+                        "publication_year": "2026",
+                        "venue": "TestConf",
+                        "citation_count": "7",
+                        "source_platforms": "semantic-scholar",
+                        "analysis_status": "cited_in_body",
+                        "location_count": "1",
+                        "pages": "5",
+                        "reference_marker": "[12]",
+                    },
+                    {
+                        "dedupe_key": "google-only",
+                        "citing_title": "Compilers for Segmentation",
+                        "citing_authors": "Grace Hopper, A Student - Test Journal, 2026",
+                        "publication_year": "2026",
+                        "venue": "Test Journal",
+                        "citation_count": "3",
+                        "source_platforms": "google-scholar",
+                    },
+                    {
+                        "dedupe_key": "target-only",
+                        "citing_title": "Target Authors Only",
+                        "citing_authors": "Target Author",
+                        "citing_authors_json": json.dumps(
+                            [{"name": "Target Author", "authorId": "target-id"}]
+                        ),
+                        "publication_year": "2026",
+                        "venue": "Self Venue",
+                        "citation_count": "1",
+                        "source_platforms": "semantic-scholar",
+                    },
+                ]
+            )
+            locations = pd.DataFrame(
+                [
+                    {
+                        "citing_title": "Analytical Engines for Point Clouds",
+                        "page": "5",
+                        "citation_marker": "[12]",
+                        "context": "The target method is used as a strong baseline.",
+                    }
+                ]
+            )
+            module.write_report(
+                out,
+                {
+                    "target": module.target_to_frame(target),
+                    "papers": papers,
+                    "citation_locations": locations,
+                },
+            )
+
+            args = argparse.Namespace(
+                output=str(out),
+                author_top_n=20,
+                max_author_profiles=10,
+                scholar_locale="en",
+                min_delay=0,
+                max_delay=0,
+                s2_api_key="",
+                s2_api_key_env="SEMANTIC_SCHOLAR_API_KEY",
+                homepage_search_limit=0,
+                export_legacy_csv=False,
+            )
+            module.cmd_authors(args)
+
+            report = pd.read_excel(out / "citation_report.xlsx", sheet_name=None, dtype=str)
+            candidates = report["authors"].fillna("")
+            paper_authors = report["paper_authors"].fillna("")
+            papers_out = report["papers"].fillna("")
+            notable = report["notable_citations"].fillna("")
+            cache = json.loads((out / "author_profile_cache.json").read_text(encoding="utf-8"))
+
+            ada = candidates[candidates["name"] == "Ada Lovelace"].iloc[0]
+            assert ada["selected_citation_source"] == "google-scholar"
+            assert ada["selected_citation_count"] == "12000"
+            assert "Target Author" not in set(candidates["name"])
+            assert bool(paper_authors[paper_authors["name"] == "Target Author"].iloc[0]["is_target_author"])
+            target_overlap = papers_out[papers_out["citing_title"] == "Analytical Engines for Point Clouds"].iloc[0]
+            assert target_overlap["top_author_name"] == "Ada Lovelace"
+            assert target_overlap["target_author_excluded_count"] == "1"
+            target_only = papers_out[papers_out["citing_title"] == "Target Authors Only"].iloc[0]
+            assert target_only["top_author_status"] == "all_authors_excluded_target"
+            assert "wikidata_id" in candidates.columns
+            assert notable.iloc[0]["author_name"] == "Ada Lovelace"
+            assert notable.iloc[0]["citation_location_status"] == "located on pages 5"
+            assert "strong baseline" in notable.iloc[0]["citation_context_sample"]
+            assert set(cache) == {"google_scholar", "semantic_scholar"}
+            assert not (out / "author_candidates.csv").exists()
+    finally:
+        module.s2_author_metrics = original_s2_author_metrics
+        module.google_author_metrics = original_google_author_metrics
+        module.wikipedia_summary = original_wikipedia_summary
+
+
+def test_author_enrichment_migrates_legacy_csv_without_losing_target(module) -> None:
+    original_s2_author_metrics = module.s2_author_metrics
+    original_google_author_metrics = module.google_author_metrics
+    original_wikipedia_summary = module.wikipedia_summary
+
+    def fake_s2_author_metrics(session, author_id, name, api_key=""):
+        if author_id == "non-target-id" or name == "Non Target Scholar":
+            return {
+                "authorId": "non-target-id",
+                "citationCount": 321,
+                "hIndex": 12,
+                "paperCount": 34,
+                "affiliations": ["Legacy University"],
+                "url": "https://www.semanticscholar.org/author/non-target-id",
+            }
+        if author_id == "target-id" or name == "Target Author":
+            return {
+                "authorId": "target-id",
+                "citationCount": 9999,
+                "hIndex": 90,
+                "paperCount": 100,
+                "affiliations": ["Target Lab"],
+                "url": "https://www.semanticscholar.org/author/target-id",
+            }
+        return {}
+
+    def fake_google_author_metrics(session, name, titles, locale, min_delay, max_delay):
+        return {
+            "citations": 50000,
+            "profile_url": "https://scholar.google.com/citations?user=lowconf",
+            "match_status": "exact_name_low_confidence",
+        }
+
+    def fake_wikipedia_summary(session, name):
+        return {"is_notable": False}
+
+    module.s2_author_metrics = fake_s2_author_metrics
+    module.google_author_metrics = fake_google_author_metrics
+    module.wikipedia_summary = fake_wikipedia_summary
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            module.write_json(
+                out / "target.json",
+                {
+                    "title": "Legacy Target",
+                    "paperId": "target-paper",
+                    "authors": [{"name": "Target Author", "authorId": "target-id"}],
+                },
+            )
+            pd.DataFrame(
+                [
+                    {
+                        "dedupe_key": "legacy-row",
+                        "source_platforms": "semantic-scholar",
+                        "source_record_ids": "s2:legacy",
+                        "citing_title": "Legacy Citing Paper",
+                        "citing_authors": "Target Author, Non Target Scholar",
+                        "citing_authors_json": json.dumps(
+                            [
+                                {"name": "Target Author", "authorId": "target-id"},
+                                {"name": "Non Target Scholar", "authorId": "non-target-id"},
+                            ]
+                        ),
+                        "citing_author_ids": "target-id;non-target-id",
+                        "publication_year": "2026",
+                        "venue": "LegacyConf",
+                        "citation_count": "11",
+                    }
+                ]
+            ).to_csv(out / "citing_papers.csv", index=False, encoding="utf-8-sig")
+
+            args = argparse.Namespace(
+                output=str(out),
+                author_top_n=20,
+                max_author_profiles=10,
+                scholar_locale="en",
+                min_delay=0,
+                max_delay=0,
+                s2_api_key="",
+                s2_api_key_env="SEMANTIC_SCHOLAR_API_KEY",
+                homepage_search_limit=0,
+                export_legacy_csv=False,
+            )
+            module.cmd_authors(args)
+
+            report = pd.read_excel(out / "citation_report.xlsx", sheet_name=None, dtype=str)
+            target = report["target"].fillna("")
+            authors = report["authors"].fillna("")
+            papers = report["papers"].fillna("")
+            assert target[target["record_type"] == "author"].iloc[0]["author_name"] == "Target Author"
+            assert "Target Author" not in set(authors["name"])
+            scholar = authors[authors["name"] == "Non Target Scholar"].iloc[0]
+            assert scholar["selected_citation_source"] == "semantic-scholar"
+            assert scholar["selected_citation_count"] == "321"
+            assert scholar["google_scholar_match_status"] == "exact_name_low_confidence"
+            paper = papers[papers["citing_title"] == "Legacy Citing Paper"].iloc[0]
+            assert paper["top_author_name"] == "Non Target Scholar"
+            assert paper["target_author_excluded_count"] == "1"
+            assert not (out / "target.json").exists()
+            assert not (out / "citing_papers.csv").exists()
+    finally:
+        module.s2_author_metrics = original_s2_author_metrics
+        module.google_author_metrics = original_google_author_metrics
+        module.wikipedia_summary = original_wikipedia_summary
 
 
 def main() -> None:
@@ -482,6 +776,8 @@ def main() -> None:
     test_google_citation_count_defaults_to_zero(module)
     test_google_zero_citation_count_overrides_semantic_merge(module)
     test_parallel_download_manifest(module)
+    test_author_enrichment_outputs_notable_locations(module)
+    test_author_enrichment_migrates_legacy_csv_without_losing_target(module)
     print("OK merge and parallel download logic")
 
 
